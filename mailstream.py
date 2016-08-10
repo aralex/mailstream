@@ -13,55 +13,68 @@ import ConfigParser
 
 parser = argparse.ArgumentParser(prog = 'mailstream', description = ('Mail stream.'))
 
-parser.add_argument('-c', dest = 'cfg_file', nargs = 1, #type=argparse.FileType(),
-                    help = 'configuration file name')
-
-parser.add_argument('-t', dest = 'tpl_file', nargs = 1, type = argparse.FileType(), help = 'message template file')
-
+parser.add_argument('-c', dest = 'cfg_file', nargs = 1, help = 'configuration file name')
+parser.add_argument('-t', dest = 'tpl_file', nargs = '?', type = argparse.FileType(), help = 'message template file')
+parser.add_argument('-d', dest = 'data_file', nargs = '?', type = argparse.FileType(), help = 'data file')
 parser.add_argument('-s', dest = 'skip_lines', nargs = '?', type = int, required = False, default = -1, help = 'skip first N lines')
+parser.add_argument('-q', dest = 'quiet_mode', required = False, action='store_true', help = 'quiet mode')
 
 options = parser.parse_args()
 
 cfg_file = options.cfg_file[0]
-tpl_file = options.tpl_file[0]
-lines_to_skip = options.skip_lines or 0
+tpl_file = options.tpl_file
+data_file = options.data_file or sys.stdin
+verbose_mode = not options.quiet_mode or False
 
-print 'cfg_file: ' + cfg_file
-print 'lines_to_skip: %d' % (lines_to_skip)
 
-exit
-
-#cfg_file = 'smtp_tarantella.cfg'
+if verbose_mode:
+  print 'Configuration file: ' + cfg_file
+  
 
 config = ConfigParser.ConfigParser()
 config.read(cfg_file)
 
-cSmtpServer = config.get('server', 'hostname')
-cUser = config.get('server', 'user')
-cPassword = config.get('server', 'password')
-cFrom = config.get('server', 'sender')
-cDelay = config.getint('server', 'delay')
-cProcessed = config.getint('server', 'processed')
+smtp_server = config.get('server', 'hostname')
+smtp_user = config.get('server', 'user')
+smtp_password = config.get('server', 'password')
+msg_sender = config.get('server', 'sender')
+msg_delay = config.getint('server', 'delay')
+msgs_processed = config.getint('server', 'processed')
+reconnect_after = config.getint('server', 'reconnect_after')
+reconnect_delay = config.getint('server', 'reconnect_delay')
+
+
+if options.skip_lines is None:
+  lines_to_skip = msgs_processed
+elif options.skip_lines == -1:  
+  lines_to_skip = 0
+else:
+  lines_to_skip = options.skip_lines
+
+
+if verbose_mode:
+  print 'Lines to skip: %d' % (lines_to_skip)
+
 
 if lines_to_skip == -1:
-  lines_to_skip = cProcessed
+  lines_to_skip = msgs_processed
 
 LTS = lines_to_skip
 dry_run = False
 
-n = 1
+n = 0
 
 with tpl_file:
   tpl = tpl_file.read()
 
 
-reader = csv.DictReader(sys.stdin, delimiter=';')
+reader = csv.DictReader(data_file, delimiter=';')
 
 
 # Соединяемся с smtp-сервером.
-server = smtplib.SMTP_SSL(cSmtpServer)
+server = smtplib.SMTP_SSL(smtp_server)
 #server.set_debuglevel(1)
-server.login(cUser, cPassword)
+server.login(smtp_user, smtp_password)
 
 
 # Цикл по наборам данных
@@ -70,8 +83,8 @@ for row in reader:
   
   if lines_to_skip > 0:
     lines_to_skip = lines_to_skip - 1
-    print 'Skipped %d of %d: %s' % (n, LTS, vTo)
     n = n + 1
+    print 'Skipped %d of %d: %s' % (n, LTS, vTo)
     continue
   
   date = datetime.datetime.now().strftime('%m/%d/%Y %H:%M:%S')
@@ -79,7 +92,7 @@ for row in reader:
   message = tpl
 
   message = re.sub('{date}', date, message)
-  message = re.sub('{from}', cFrom, message)
+  message = re.sub('{from}', msg_sender, message)
 
   fields = re.findall(r"\{(\w+)\}", message)
   
@@ -91,28 +104,34 @@ for row in reader:
       value = '{' + f + '}';
       message = re.sub(value, row[f], message)
 
-  vFrom = cFrom
+  vFrom = msg_sender
   vBody = message
   
   if dry_run:
-    print '[%d: %s, %s]' % (n, vTo, date)
     n = n + 1
+    if verbose_mode:
+      print '[%d: %s, %s]' % (n, vTo, date)
     continue
     
 
   server.sendmail(vFrom, vTo, vBody)
-  print '%d: mail sent to %s, %s' % (n, vTo, date)
   n = n + 1
+  if verbose_mode:
+    print '%d: mail sent to %s, %s' % (n, vTo, date)
   config.set('server', 'processed', n)
   with open(cfg_file, 'wb') as configfile:
     config.write(configfile)
   
-  if (n % 44) == 0:
+  if (n % reconnect_after) == 0:
     server.quit()
     time.sleep(4)
-    server = smtplib.SMTP_SSL(cSmtpServer)
-    server.login(cUser, cPassword)
+    server = smtplib.SMTP_SSL(smtp_server)
+    server.login(smtp_user, smtp_password)
   else:
-    time.sleep(cDelay)
+    time.sleep(msg_delay)
     
 server.quit()
+
+config.set('server', 'processed', -1)
+with open(cfg_file, 'wb') as configfile:
+  config.write(configfile)
