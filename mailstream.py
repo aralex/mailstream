@@ -18,6 +18,8 @@ parser.add_argument('-t', dest = 'tpl_file', nargs = '?', type = argparse.FileTy
 parser.add_argument('-d', dest = 'data_file', nargs = '?', type = argparse.FileType(), help = 'data file')
 parser.add_argument('-s', dest = 'skip_lines', nargs = '?', type = int, required = False, default = -1, help = 'skip first N lines')
 parser.add_argument('-q', dest = 'quiet_mode', required = False, action='store_true', help = 'quiet mode')
+parser.add_argument('-p', dest = 'print_mode', required = False, action='store_true', help = 'printing mode')
+parser.add_argument('-D', dest = 'dry_run_mode', required = False, action='store_true', help = 'dry run mode')
 
 options = parser.parse_args()
 
@@ -25,7 +27,8 @@ cfg_file = options.cfg_file[0]
 tpl_file = options.tpl_file
 data_file = options.data_file or sys.stdin
 verbose_mode = not options.quiet_mode or False
-
+print_mode = options.print_mode or False
+dry_run = options.dry_run_mode or False
 
 if verbose_mode:
   print 'Configuration file: ' + cfg_file
@@ -60,7 +63,6 @@ if lines_to_skip == -1:
   lines_to_skip = msgs_processed
 
 LTS = lines_to_skip
-dry_run = False
 
 n = 0
 
@@ -106,31 +108,34 @@ for row in reader:
 
   vFrom = msg_sender
   vBody = message
-  
-  if dry_run:
-    n = n + 1
-    if verbose_mode:
-      print '[%d: %s, %s]' % (n, vTo, date)
-    continue
-    
 
-  server.sendmail(vFrom, vTo, vBody)
+  if not dry_run:
+    server.sendmail(vFrom, vTo, vBody)
+    
   n = n + 1
-  if verbose_mode:
-    print '%d: mail sent to %s, %s' % (n, vTo, date)
+  
+  if print_mode:
+    print '%s\n---------------------------------------------\n' % (vBody)
+
+    
   config.set('server', 'processed', n)
   with open(cfg_file, 'wb') as configfile:
     config.write(configfile)
   
-  if (n % reconnect_after) == 0:
-    server.quit()
-    time.sleep(4)
-    server = smtplib.SMTP_SSL(smtp_server)
-    server.login(smtp_user, smtp_password)
-  else:
-    time.sleep(msg_delay)
+  if not dry_run:
+    if (n % reconnect_after) == 0:
+      server.quit()
+      time.sleep(4)
+      server = smtplib.SMTP_SSL(smtp_server)
+      server.login(smtp_user, smtp_password)
+    else:
+      time.sleep(msg_delay)
     
-server.quit()
+  if verbose_mode:
+    print '%d: mail sent to %s, %s %s' % (n, vTo, date, '- simulated' if dry_run else '')
+    
+if not dry_run:
+  server.quit()
 
 config.set('server', 'processed', -1)
 with open(cfg_file, 'wb') as configfile:
